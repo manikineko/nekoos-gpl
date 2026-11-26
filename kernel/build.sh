@@ -21,7 +21,10 @@ mk() { make -C "$ksrc" O="$obj" ARCH="$karch" LLVM="$llvm" -j"$jobs" "$@"; }
 
 mk "$defconfig"
 frags="$here/configs/nekoos.config $here/configs/nekoos-$karch.config"
-for f in "$@"; do frags="$frags $f"; done
+for f in "$@"; do
+	case "$f" in /*) ;; *) f=$PWD/$f ;; esac
+	frags="$frags $f"
+done
 (cd "$obj" && ARCH="$karch" "$ksrc/scripts/kconfig/merge_config.sh" -m -O "$obj" .config $frags)
 mk olddefconfig
 for f in $frags; do

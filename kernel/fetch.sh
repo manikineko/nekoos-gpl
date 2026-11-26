@@ -7,6 +7,7 @@ major=${ver%%.*}
 src=${SRC_DIR:-$here/src}
 tarball="linux-$ver.tar.xz"
 mkdir -p "$src"
+src=$(cd "$src" && pwd)
 cd "$src"
 if [ ! -f "$tarball" ]; then
 	curl -fL --retry 3 -o "$tarball.part" "https://cdn.kernel.org/pub/linux/kernel/v$major.x/$tarball"
