@@ -1,0 +1,5 @@
+The Linux kernel is licensed under GPL-2.0-only WITH Linux-syscall-note.
+The full license texts ship inside the kernel source tarball (COPYING, LICENSES/).
+
+Patches, config fragments and scripts in this repository are provided under GPL-2.0-only,
+the same license as the kernel.
