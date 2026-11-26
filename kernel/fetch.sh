@@ -14,13 +14,20 @@ if [ ! -f "$tarball" ]; then
 	mv "$tarball.part" "$tarball"
 fi
 sha256sum -c "$here/$tarball.sha256"
+stamp=$(cd "$here/patches" && cat series $(grep -Ev '^(#|$)' series) | sha256sum | cut -d' ' -f1)
+if [ -d "linux-$ver" ] && [ "$(cat "linux-$ver/.nekoos-patches" 2>/dev/null)" != "$stamp" ]; then
+	echo "patch set changed, re-extracting linux-$ver" >&2
+	rm -rf "linux-$ver"
+fi
 if [ ! -d "linux-$ver" ]; then
 	tar xf "$tarball"
 	cd "linux-$ver"
 	while read -r p; do
 		case "$p" in ''|'#'*) continue ;; esac
-		echo "applying $p"
-		patch -p1 < "$here/patches/$p"
+		echo "applying $p" >&2
+		patch -p1 < "$here/patches/$p" >&2
 	done < "$here/patches/series"
+	echo "$stamp" > .nekoos-patches
+	cd "$src"
 fi
 echo "$src/linux-$ver"
