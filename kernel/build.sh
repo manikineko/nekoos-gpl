@@ -3,6 +3,7 @@
 #   ./build.sh x86_64|arm64 [extra fragment ...]
 # Output: out/<arch>/{boot image, modules/, dtbs/, headers/}
 set -eu
+unset CDPATH
 here=$(cd "$(dirname "$0")" && pwd)
 arch=${1:?usage: build.sh x86_64|arm64 [fragment ...]}
 shift

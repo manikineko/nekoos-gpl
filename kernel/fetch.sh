@@ -1,6 +1,7 @@
 #!/bin/sh
 # Fetch and verify the pinned Linux release, then apply patches/series.
 set -eu
+unset CDPATH
 here=$(cd "$(dirname "$0")" && pwd)
 ver=$(cat "$here/VERSION")
 major=${ver%%.*}
