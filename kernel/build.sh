@@ -38,6 +38,7 @@ mk INSTALL_MOD_PATH="$out/modules" INSTALL_MOD_STRIP=1 modules_install
 mk INSTALL_HDR_PATH="$out/headers" headers_install
 if [ "$karch" = arm64 ]; then mk INSTALL_DTBS_PATH="$out/dtbs" dtbs_install; fi
 cp "$obj/$image" "$out/"
-[ -f "$obj/arch/arm64/boot/vmlinuz.efi" ] && cp "$obj/arch/arm64/boot/vmlinuz.efi" "$out/"
+rm -f "$out/vmlinuz.efi"
+if grep -qx CONFIG_EFI_ZBOOT=y "$obj/.config"; then cp "$obj/arch/arm64/boot/vmlinuz.efi" "$out/"; fi
 cp "$obj/.config" "$out/config"
 echo "kernel: $out/$(basename "$image")"
