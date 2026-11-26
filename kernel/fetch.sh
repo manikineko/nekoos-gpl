@@ -26,10 +26,11 @@ if [ -d "linux-$ver" ]; then
 fi
 if [ ! -d "linux-$ver" ]; then
 	# Extract and patch in a staging dir so an interrupted run never leaves a partial tree.
-	rm -rf .extract
-	mkdir .extract
-	tar xf "$tarball" -C .extract
-	cd ".extract/linux-$ver"
+	stage=".linux-$ver.fetch-staging"
+	rm -rf "$stage"
+	mkdir "$stage"
+	tar xf "$tarball" -C "$stage"
+	cd "$stage/linux-$ver"
 	while read -r p; do
 		case "$p" in ''|'#'*) continue ;; esac
 		echo "applying $p" >&2
@@ -37,7 +38,7 @@ if [ ! -d "linux-$ver" ]; then
 	done < "$here/patches/series"
 	echo "$stamp" > .nekoos-patches
 	cd "$src"
-	mv ".extract/linux-$ver" "linux-$ver"
-	rmdir .extract
+	mv "$stage/linux-$ver" "linux-$ver"
+	rmdir "$stage"
 fi
 echo "$src/linux-$ver"
