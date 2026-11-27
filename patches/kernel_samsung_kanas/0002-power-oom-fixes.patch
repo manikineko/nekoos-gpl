@@ -1,0 +1,194 @@
+diff --git a/fs/ecryptfs/keystore.c b/fs/ecryptfs/keystore.c
+index 99d38bf9..5cd3482a 100644
+--- a/fs/ecryptfs/keystore.c
++++ b/fs/ecryptfs/keystore.c
+@@ -1202,17 +1202,12 @@ decrypt_pki_encrypted_session_key(struct ecryptfs_auth_tok *auth_tok,
+ 				  crypt_stat->key_size);
+ 	}
+ out:
+-<<<<<<< HEAD
+ 	if (msg)
+ 		kfree(msg);
+ 	if (auth_tok_sig)
+         kfree(auth_tok_sig);
+ 	if (payload)
+         kfree(payload);
+-=======
+-	kfree(msg);
+-	kfree(payload);
+->>>>>>> v3.10.108
+ 	return rc;
+ }
+ 
+diff --git a/kernel/power/main.c b/kernel/power/main.c
+index 4bf95f3c..8b9ef6a8 100644
+--- a/kernel/power/main.c
++++ b/kernel/power/main.c
+@@ -352,7 +352,6 @@ static ssize_t state_store(struct kobject *kobj, struct kobj_attribute *attr,
+ #else
+ 	suspend_state_t state = PM_SUSPEND_STANDBY;
+ #endif
+-	const char * const *s;
+ #endif
+ 	char *p;
+ 	int len;
+@@ -368,18 +367,16 @@ static ssize_t state_store(struct kobject *kobj, struct kobj_attribute *attr,
+ 	}
+ 
+ #ifdef CONFIG_SUSPEND
+-	for (s = &pm_states[state]; state < PM_SUSPEND_MAX; s++, state++) {
+-		if (*s && len == strlen(*s) && !strncmp(buf, *s, len)) {
++	state = decode_state(buf, n);
++	if (state < PM_SUSPEND_MAX) {
+ #ifdef CONFIG_EARLYSUSPEND
+-			if (state == PM_SUSPEND_ON || valid_state(state)) {
+-				error = 0;
+-				request_suspend_state(state);
+-				break;
+-			}
++		if (state == PM_SUSPEND_ON || valid_state(state)) {
++			error = 0;
++			request_suspend_state(state);
++		}
+ #else
+-			error = pm_suspend(state);
++		error = pm_suspend(state);
+ #endif
+-		}
+ 	}
+ #endif
+ 
+diff --git a/kernel/power/power.h b/kernel/power/power.h
+index dfa8615c..6530295c 100644
+--- a/kernel/power/power.h
++++ b/kernel/power/power.h
+@@ -183,6 +183,8 @@ struct pm_sleep_state {
+ /* kernel/power/suspend.c */
+ extern struct pm_sleep_state pm_states[];
+ 
++extern bool valid_state(suspend_state_t state);
++
+ extern int suspend_devices_and_enter(suspend_state_t state);
+ #else /* !CONFIG_SUSPEND */
+ static inline int suspend_devices_and_enter(suspend_state_t state)
+diff --git a/kernel/power/suspend.c b/kernel/power/suspend.c
+index 23f5096b..371c4f00 100644
+--- a/kernel/power/suspend.c
++++ b/kernel/power/suspend.c
+@@ -30,12 +30,12 @@
+ 
+ #include "power.h"
+ 
+-const char *const pm_states[PM_SUSPEND_MAX] = {
++struct pm_sleep_state pm_states[PM_SUSPEND_MAX] = {
+ #ifdef CONFIG_EARLYSUSPEND
+-	[PM_SUSPEND_ON]		= "on",
++	[PM_SUSPEND_ON]		= { .label = "on", .state = PM_SUSPEND_ON },
+ #endif
+-	[PM_SUSPEND_STANDBY]	= "standby",
+-	[PM_SUSPEND_MEM]	= "mem",
++	[PM_SUSPEND_STANDBY]	= { .label = "standby" },
++	[PM_SUSPEND_MEM]	= { .label = "mem" },
+ };
+ 
+ static const struct platform_suspend_ops *suspend_ops;
+@@ -60,20 +60,12 @@ void freeze_wake(void)
+ }
+ EXPORT_SYMBOL_GPL(freeze_wake);
+ 
+-static bool valid_state(suspend_state_t state)
+-{
+-	/*
+-	 * PM_SUSPEND_STANDBY and PM_SUSPEND_MEM states need low level
+-	 * support and need to be valid to the low level
+-	 * implementation, no valid callback implies that none are valid.
+-	 */
+-	return suspend_ops && suspend_ops->valid && suspend_ops->valid(state);
+-}
+-
+ /**
+  * suspend_set_ops - Set the global suspend method table.
+  * @ops: Suspend operations to use.
+  */
++bool valid_state(suspend_state_t state);
++
+ void suspend_set_ops(const struct platform_suspend_ops *ops)
+ {
+ 	suspend_state_t i;
+diff --git a/mm/oom_kill.c b/mm/oom_kill.c
+index af555df9..ce4b6fcd 100644
+--- a/mm/oom_kill.c
++++ b/mm/oom_kill.c
+@@ -411,7 +411,6 @@ static void dump_header(struct task_struct *p, gfp_t gfp_mask, int order,
+ 		dump_tasks(memcg, nodemask);
+ }
+ 
+-<<<<<<< HEAD
+ static void set_thread_group_flag(struct task_struct *p, int flag)
+ {
+ 	struct task_struct *tp = p;
+@@ -429,7 +428,8 @@ static void set_thread_group_flag(struct task_struct *p, int flag)
+ 	do {
+ 		set_tsk_thread_flag(tp, TIF_MEMDIE);
+ 	} while_each_thread(p, tp);
+-=======
++}
++
+ /*
+  * Number of OOM killer invocations (including memcg OOM killer).
+  * Primarily used by PM freezer to check for potential races with
+@@ -445,7 +445,6 @@ int oom_kills_count(void)
+ void note_oom_kill(void)
+ {
+ 	atomic_inc(&oom_kills);
+->>>>>>> v3.10.108
+ }
+ 
+ #define K(x) ((x) << (PAGE_SHIFT-10))
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index b4a2afb4..707c2edb 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -172,6 +172,20 @@ static bool global_reclaim(struct scan_control *sc)
+ }
+ #endif
+ 
++unsigned long zone_reclaimable_pages(struct zone *zone)
++{
++	int nr;
++
++	nr = zone_page_state(zone, NR_ACTIVE_FILE) +
++	     zone_page_state(zone, NR_INACTIVE_FILE);
++
++	if (get_nr_swap_pages() > 0)
++		nr += zone_page_state(zone, NR_ACTIVE_ANON) +
++		     zone_page_state(zone, NR_INACTIVE_ANON);
++
++	return nr;
++}
++
+ bool zone_reclaimable(struct zone *zone)
+ {
+ 	return zone->pages_scanned < zone_reclaimable_pages(zone) * 6;
+diff --git a/net/ipv4/ping.c b/net/ipv4/ping.c
+index 8bca1883..4306ed22 100644
+--- a/net/ipv4/ping.c
++++ b/net/ipv4/ping.c
+@@ -924,17 +924,6 @@ int ping_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
+ #endif
+ 	} else {
+ 		BUG();
+-=======
+-	/* Copy the address. */
+-	if (msg->msg_name) {
+-		struct sockaddr_in *sin = (struct sockaddr_in *)msg->msg_name;
+-
+-		sin->sin_family = AF_INET;
+-		sin->sin_port = 0 /* skb->h.uh->source */;
+-		sin->sin_addr.s_addr = ip_hdr(skb)->saddr;
+-		memset(sin->sin_zero, 0, sizeof(sin->sin_zero));
+-		*addr_len = sizeof(*sin);
+->>>>>>> v3.10.108
+ 	}
+ 
+ 	err = copied;
