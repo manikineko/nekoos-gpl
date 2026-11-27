@@ -1,0 +1,801 @@
+From acd318ef3ec168e0cb872689c1c382aacf4f2b82 Mon Sep 17 00:00:00 2001
+From: bloomsirenix <bloomsirenix@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 09:28:34 +0100
+Subject: [PATCH] Add manikineko machine types (arm, i386) + manikineko-ec/uxh1
+ misc devices
+
+---
+ hw/arm/Kconfig               |   1 +
+ hw/arm/manikineko.c          |  77 +++++++
+ hw/arm/meson.build           |   1 +
+ hw/i386/Kconfig              |   1 +
+ hw/i386/manikineko.c         |  80 ++++++++
+ hw/i386/meson.build          |   1 +
+ hw/misc/Kconfig              |   5 +
+ hw/misc/manikineko-ec.c      | 375 +++++++++++++++++++++++++++++++++++
+ hw/misc/manikineko-uxh1.c    | 119 +++++++++++
+ hw/misc/meson.build          |   2 +
+ include/hw/misc/manikineko.h |  19 ++
+ 11 files changed, 681 insertions(+)
+ create mode 100644 hw/arm/manikineko.c
+ create mode 100644 hw/i386/manikineko.c
+ create mode 100644 hw/misc/manikineko-ec.c
+ create mode 100644 hw/misc/manikineko-uxh1.c
+ create mode 100755 include/hw/misc/manikineko.h
+
+diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
+index 1ecd75e..ebf1d95 100644
+--- a/hw/arm/Kconfig
++++ b/hw/arm/Kconfig
+@@ -4,6 +4,7 @@ config ARM_VIRT
+     depends on ARM
+     imply PCI_DEVICES
+     imply TEST_DEVICES
++    imply MANIKINEKO
+     imply VFIO_AMD_XGBE
+     imply VFIO_PLATFORM
+     imply VFIO_XGMAC
+diff --git a/hw/arm/manikineko.c b/hw/arm/manikineko.c
+new file mode 100644
+index 0000000..4848967
+--- /dev/null
++++ b/hw/arm/manikineko.c
+@@ -0,0 +1,77 @@
++/*
++ * manikineko-arm: Phone_AArch64 profile AND the desktop's gated AArch64
++ * secondary (U6) — same machine, different launcher wiring.
++ *
++ * virt-based machine plus the Manikineko platform devices:
++ *   manikineko-ec   MMIO mailbox at 0x09042000 (free window below SMMU)
++ *   uxh1-slot x4    MMIO at 0x09043000 + n*0x100
++ *
++ * As phone primary: boots TF-A/U-Boot/UEFI from -bios/-kernel; requests
++ * the x64 assist via mailbox cmd 0x01.
++ * As desktop secondary: spawned by launch_manikineko.py after ec_sim
++ * reports SEC_ARM_PG; its -serial is the SEC_* IPC socket to the x64 side.
++ *
++ * EC backend: -chardev socket,id=ec-sim,... is bound automatically.
++ */
++#include "qemu/osdep.h"
++#include "hw/arm/virt.h"
++#include "hw/sysbus.h"
++#include "hw/qdev-properties.h"
++#include "chardev/char.h"
++#include "qapi/error.h"
++
++#define MK_EC_BASE    0x09042000
++#define MK_UXH1_BASE  0x09043000
++#define MK_EC_CHR_ID  "ec-sim"
++
++static void mk_arm_add_platform_devices(MachineState *machine)
++{
++    Chardev *chr = qemu_chr_find(MK_EC_CHR_ID);   /* optional */
++    DeviceState *ec;
++
++    ec = qdev_new("manikineko-ec");
++    qdev_prop_set_uint8(ec, "profile", 1);         /* mobile by default */
++    if (chr) {
++        qdev_prop_set_chr(ec, "socket", chr);
++    }
++    sysbus_realize_and_unref(SYS_BUS_DEVICE(ec), &error_fatal);
++    sysbus_mmio_map(SYS_BUS_DEVICE(ec), 0, MK_EC_BASE);
++
++    for (int i = 0; i < 4; i++) {
++        DeviceState *d = qdev_new("uxh1-slot");
++        qdev_prop_set_uint8(d, "slot", i);
++        object_property_set_link(OBJECT(d), "ec", OBJECT(ec),
++                                 &error_abort);
++        sysbus_realize_and_unref(SYS_BUS_DEVICE(d), &error_fatal);
++        sysbus_mmio_map(SYS_BUS_DEVICE(d), 0, MK_UXH1_BASE + i * 0x100);
++    }
++}
++
++static void manikineko_arm_machine_init(MachineState *machine)
++{
++    /* run the parent (virt) machine init, then bolt on our devices */
++    ObjectClass *parent = object_class_get_parent(object_get_class(OBJECT(machine)));
++    MachineClass *parent_mc = MACHINE_CLASS(parent);
++    parent_mc->init(machine);
++    mk_arm_add_platform_devices(machine);
++}
++
++static void manikineko_arm_class_init(ObjectClass *oc, void *data)
++{
++    MachineClass *mc = MACHINE_CLASS(oc);
++    mc->desc = "Manikineko AArch64 profile (phone primary or"
++              " desktop secondary)";
++    mc->init = manikineko_arm_machine_init;
++    mc->max_cpus = 8;
++}
++
++static const TypeInfo manikineko_arm_type = {
++    .name = MACHINE_TYPE_NAME("manikineko-arm"),
++    .parent = TYPE_VIRT_MACHINE,
++    .class_init = manikineko_arm_class_init,
++};
++static void manikineko_arm_register(void)
++{
++    type_register_static(&manikineko_arm_type);
++}
++type_init(manikineko_arm_register)
+diff --git a/hw/arm/meson.build b/hw/arm/meson.build
+index 490234b..803e1d1 100644
+--- a/hw/arm/meson.build
++++ b/hw/arm/meson.build
+@@ -1,6 +1,7 @@
+ arm_ss = ss.source_set()
+ arm_ss.add(files('boot.c'))
+ arm_ss.add(when: 'CONFIG_ARM_VIRT', if_true: files('virt.c'))
++arm_ss.add(when: 'CONFIG_ARM_VIRT', if_true: files('manikineko.c'))
+ arm_ss.add(when: 'CONFIG_ACPI', if_true: files('virt-acpi-build.c'))
+ arm_ss.add(when: 'CONFIG_DIGIC', if_true: files('digic_boards.c'))
+ arm_ss.add(when: 'CONFIG_EMCRAFT_SF2', if_true: files('msf2-som.c'))
+diff --git a/hw/i386/Kconfig b/hw/i386/Kconfig
+index 3281848..fe18dfe 100644
+--- a/hw/i386/Kconfig
++++ b/hw/i386/Kconfig
+@@ -68,6 +68,7 @@ config I440FX
+     bool
+     default y
+     depends on I386
++    imply MANIKINEKO
+     imply E1000_PCI
+     imply VMPORT
+     imply VMMOUSE
+diff --git a/hw/i386/manikineko.c b/hw/i386/manikineko.c
+new file mode 100644
+index 0000000..ef1d803
+--- /dev/null
++++ b/hw/i386/manikineko.c
+@@ -0,0 +1,80 @@
++/*
++ * manikineko-x64: Desktop_Intel profile.
++ *
++ * i440fx-based machine plus the Manikineko platform devices:
++ *   manikineko-ec   MMIO mailbox at 0xFEBF0000 (below IOAPIC/LAPIC window)
++ *   uxh1-slot x4    MMIO at 0xFEBE0000 + n*0x100
++ *
++ * The gated AArch64 secondary (U6) is NOT a CPU in this process; in the
++ * co-sim it is a sibling qemu-system-aarch64 -M manikineko-arm attached
++ * to the same ec_sim. SEC_* UART/IRQ IPC is a -serial socket pair the
++ * launcher wires between the two processes.
++ *
++ * EC backend: pass -chardev socket,id=ec-sim,... and the machine binds
++ * the named chardev to the EC device automatically.
++ */
++#include "qemu/osdep.h"
++#include "hw/i386/pc.h"
++#include "hw/sysbus.h"
++#include "hw/qdev-properties.h"
++#include "chardev/char.h"
++#include "qapi/error.h"
++
++#define MK_EC_BASE    0xFEBF0000
++#define MK_UXH1_BASE  0xFEBE0000
++#define MK_EC_CHR_ID  "ec-sim"
++
++static void mk_x64_add_platform_devices(MachineState *machine)
++{
++    DeviceState *ec;
++    Chardev *chr = qemu_chr_find(MK_EC_CHR_ID);   /* optional */
++
++    ec = qdev_new("manikineko-ec");
++    qdev_prop_set_uint8(ec, "profile", 2);         /* desktop */
++    if (chr) {
++        qdev_prop_set_chr(ec, "socket", chr);
++    }
++    sysbus_realize_and_unref(SYS_BUS_DEVICE(ec), &error_fatal);
++    sysbus_mmio_map(SYS_BUS_DEVICE(ec), 0, MK_EC_BASE);
++
++    for (int i = 0; i < 4; i++) {
++        DeviceState *d = qdev_new("uxh1-slot");
++        qdev_prop_set_uint8(d, "slot", i);
++        object_property_set_link(OBJECT(d), "ec", OBJECT(ec),
++                                 &error_abort);
++        sysbus_realize_and_unref(SYS_BUS_DEVICE(d), &error_fatal);
++        sysbus_mmio_map(SYS_BUS_DEVICE(d), 0, MK_UXH1_BASE + i * 0x100);
++    }
++}
++
++static void manikineko_x64_machine_init(MachineState *machine)
++{
++    /* run the parent (pc-i440fx) machine init, then bolt on our devices */
++    ObjectClass *parent = object_class_get_parent(object_get_class(OBJECT(machine)));
++    MachineClass *parent_mc = MACHINE_CLASS(parent);
++    parent_mc->init(machine);
++    mk_x64_add_platform_devices(machine);
++}
++
++static void manikineko_x64_class_init(ObjectClass *oc, void *data)
++{
++    MachineClass *mc = MACHINE_CLASS(oc);
++    mc->desc = "Manikineko Desktop_Intel profile (x64 primary)";
++    mc->init = manikineko_x64_machine_init;
++    mc->max_cpus = 16;
++    mc->alias = NULL;                 /* do not inherit pc alias/default */
++    mc->is_default = false;
++    /* keep upstream pc options (firmware=bios-256k.bin etc.) from parent */
++}
++
++static const TypeInfo manikineko_x64_type = {
++    /* parent is the versioned i440fx type; bump on QEMU rebase */
++    .name = MACHINE_TYPE_NAME("manikineko-x64"),
++    .parent = MACHINE_TYPE_NAME("pc-i440fx-9.2"),
++    .class_init = manikineko_x64_class_init,
++};
++static void manikineko_x64_register(void)
++{
++    type_register_static(&manikineko_x64_type);
++}
++type_init(manikineko_x64_register)
+diff --git a/hw/i386/meson.build b/hw/i386/meson.build
+index 10bdfde..5950385 100644
+--- a/hw/i386/meson.build
++++ b/hw/i386/meson.build
+@@ -27,6 +27,7 @@ i386_ss.add(when: 'CONFIG_ACPI', if_true: files('acpi-common.c'))
+ i386_ss.add(when: 'CONFIG_PC', if_true: files(
+   'x86-common.c',
+   'pc.c',
++  'manikineko.c',
+   'pc_sysfw.c',
+   'acpi-build.c',
+   'port92.c'))
+diff --git a/hw/misc/Kconfig b/hw/misc/Kconfig
+index 1f1baa5..aa9acac 100644
+--- a/hw/misc/Kconfig
++++ b/hw/misc/Kconfig
+@@ -216,3 +216,8 @@ config XLNX_VERSAL_TRNG
+     bool
+ 
+ source macio/Kconfig
++
++config MANIKINEKO
++    bool
++    default y
++    depends on I2C
+diff --git a/hw/misc/manikineko-ec.c b/hw/misc/manikineko-ec.c
+new file mode 100644
+index 0000000..f1241c1
+--- /dev/null
++++ b/hw/misc/manikineko-ec.c
+@@ -0,0 +1,375 @@
++/*
++ * Manikineko EC (U100) mailbox device.
++ *
++ * Two device models sharing one register file + backend:
++ *   "manikineko-ec"      - sysbus MMIO mailbox (64 regs). Primary guest
++ *                          interface; works on machines with no I2C master.
++ *   "manikineko-ec-i2c"  - I2C slave frontend for boards that wire the EC
++ *                          to a controller; attach to any I2CBus.
++ *
++ * Backends:
++ *   socket=CHR   - async push/pull against the external ec_sim (co-sim
++ *                  mode: N QEMU processes, one EC + NOR). Mailbox reads
++ *                  are served from shadow registers kept fresh by sim
++ *                  events; writes are forwarded and mirrored locally.
++ *   (unset)      - built-in model, enough for single-process smoke tests.
++ *
++ * Register map: see firmware/include/unified_platform.h.
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/error-report.h"
++#include "qemu/cutils.h"
++#include "hw/i2c/i2c.h"
++#include "hw/sysbus.h"
++#include "hw/qdev-properties.h"
++#include "hw/qdev-properties-system.h"
++#include "hw/misc/manikineko.h"
++#include "chardev/char-fe.h"
++#include "qapi/error.h"
++#include "sysemu/runstate.h"
++
++#define MK_EC_MAX_REG   0x3F
++#define MK_EC_MMIO_SIZE 0x1000
++#define MK_RX_BUF       256
++
++/* mailbox regs (unified_platform.h) */
++#define MK_REG_CMD        0x01
++#define MK_CMD_ASSIST     0x01
++#define MK_CMD_RESET      0x02
++#define MK_CMD_SEC_ARM    0x05
++#define MK_CMD_EXP_SCAN   0x06
++
++typedef struct {
++    uint8_t  profile;        /* property: 1 mobile, 2 desktop */
++    uint8_t  status;
++    uint8_t  reason;
++    uint8_t  boot_slot;
++    uint8_t  rollback;
++    uint8_t  exp_present;
++    uint8_t  dev_state;
++    uint8_t  exp[4][4];      /* slot -> {card_id, isa, flash_mb, lanes} */
++} MKECRegs;
++
++typedef struct {
++    CharBackend  be;
++    uint8_t      profile;
++    uint8_t      rollback;
++    char         rx[MK_RX_BUF];
++    size_t       rx_len;
++    void        *owner;      /* MKECRegs lives in the device state */
++} MKECBackend;
++
++/* ---- local model ---- */
++static uint8_t mk_ec_local_read(MKECRegs *s, uint8_t reg)
++{
++    switch (reg) {
++    case 0x00:
++        return s->profile;
++    case 0x02:
++        return s->status;
++    case 0x03:
++        return s->reason;
++    case 0x10:
++        return s->boot_slot;
++    case 0x11:
++        return s->rollback;
++    case 0x20:
++        return s->exp_present;
++    case 0x31:
++        return s->dev_state;
++    default:
++        if (reg >= 0x21 && reg < 0x21 + 16) {
++            return s->exp[(reg - 0x21) / 4][(reg - 0x21) % 4];
++        }
++        return 0;
++    }
++}
++
++static void mk_ec_local_write(MKECRegs *s, uint8_t reg, uint8_t val)
++{
++    if (reg == MK_REG_CMD) {
++        bool mobile = s->profile == 1;
++
++        if ((val == MK_CMD_ASSIST && mobile) ||
++            (val == MK_CMD_SEC_ARM && !mobile)) {
++            s->status |= mobile ? 0x01 : 0x20;  /* PG instantly good in sim */
++        }
++        if (val == MK_CMD_RESET) {
++            qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
++        }
++    } else if (reg == 0x10) {
++        s->boot_slot = val;
++    }
++}
++
++/* ---- shadow + socket backend ----
++ * Reads always come from MKECRegs shadow. ec_sim pushes "STATUS hh" and
++ * "CARD s isa flash lanes" (-1 isa = detached) whenever state changes;
++ * writes are forwarded async AND applied to the shadow optimistically.
++ */
++static uint8_t mk_ec_reg_read(MKECBackend *b, MKECRegs *r, uint8_t reg)
++{
++    return mk_ec_local_read(r, reg);
++}
++
++static void mk_ec_reg_write(MKECBackend *b, MKECRegs *r,
++                            uint8_t reg, uint8_t val)
++{
++    mk_ec_local_write(r, reg, val);
++    if (b->be.chr) {
++        char q[24];
++        int n = snprintf(q, sizeof(q), "WRITE %02X %02X\n", reg, val);
++        qemu_chr_fe_write(&b->be, (const uint8_t *)q, n);
++    }
++}
++
++static void mk_ec_sim_line(MKECBackend *b, MKECRegs *r, char *line)
++{
++    unsigned long v;
++    const char *end;
++
++    if (!strncmp(line, "STATUS ", 7) &&
++        qemu_strtoul(line + 7, &end, 16, &v) == 0) {
++        r->status = (uint8_t)v;
++    } else if (!strncmp(line, "CARD ", 5)) {
++        int slot, isa, flash, lanes;
++        if (sscanf(line + 5, "%d %d %d %d", &slot, &isa, &flash, &lanes)
++                == 4 && slot >= 0 && slot < 4) {
++            if (isa < 0) {
++                r->exp_present &= ~(1u << slot);
++            } else {
++                r->exp_present |= 1u << slot;
++                r->exp[slot][1] = (uint8_t)isa;
++                r->exp[slot][2] = (uint8_t)flash;
++                r->exp[slot][3] = (uint8_t)lanes;
++            }
++        }
++    } else if (!strncmp(line, "BOOTSLOT ", 9) &&
++               qemu_strtoul(line + 9, &end, 16, &v) == 0) {
++        r->boot_slot = (uint8_t)v;
++    } else if (!strncmp(line, "ROLLBACK ", 9) &&
++               qemu_strtoul(line + 9, &end, 16, &v) == 0) {
++        r->rollback = (uint8_t)v;
++    }
++    /* "RESET", "PG", "GATE", etc. are informational for other peers */
++}
++
++static int mk_ec_chr_can_read(void *opaque)
++{
++    return 64;
++}
++
++static void mk_ec_chr_read(void *opaque, const uint8_t *buf, int size)
++{
++    MKECBackend *b = opaque;
++    MKECRegs *r = b->owner;
++
++    for (int i = 0; i < size; i++) {
++        if (buf[i] == '\n' || b->rx_len == MK_RX_BUF - 1) {
++            b->rx[b->rx_len] = 0;
++            mk_ec_sim_line(b, r, b->rx);
++            b->rx_len = 0;
++        } else {
++            b->rx[b->rx_len++] = buf[i];
++        }
++    }
++}
++
++/* ================= sysbus MMIO device ================= */
++
++OBJECT_DECLARE_SIMPLE_TYPE(ManikinekoECState, MANIKINEKO_EC)
++
++struct ManikinekoECState {
++    SysBusDevice parent_obj;
++    MemoryRegion mmio;
++    MKECBackend  be;
++    MKECRegs     regs;
++};
++
++/*
++ * Shared card-status path for uxh1-slot devices: reads the EC's shadow
++ * registers, coherent with whatever the sim last pushed.
++ */
++uint8_t mk_ec_card_status(DeviceState *dev, int slot, int field)
++{
++    ManikinekoECState *s = MANIKINEKO_EC(dev);
++
++    if (slot < 0 || slot > 3) {
++        return 0;
++    }
++    switch (field) {
++    case 0:
++        return !!(s->regs.exp_present & (1u << slot));
++    case 1:
++        return s->regs.exp[slot][1];   /* isa */
++    case 2:
++        return s->regs.exp[slot][3];   /* lanes */
++    case 3:
++        return slot;
++    default:
++        return 0;
++    }
++}
++
++static uint64_t mk_ec_mmio_read(void *opaque, hwaddr addr, unsigned size)
++{
++    ManikinekoECState *s = MANIKINEKO_EC(opaque);
++
++    if (addr > MK_EC_MAX_REG) {
++        return 0;
++    }
++    return mk_ec_reg_read(&s->be, &s->regs, addr);
++}
++
++static void mk_ec_mmio_write(void *opaque, hwaddr addr, uint64_t val,
++                             unsigned size)
++{
++    ManikinekoECState *s = MANIKINEKO_EC(opaque);
++
++    if (addr <= MK_EC_MAX_REG) {
++        mk_ec_reg_write(&s->be, &s->regs, addr, val);
++    }
++}
++
++static const MemoryRegionOps mk_ec_mmio_ops = {
++    .read = mk_ec_mmio_read,
++    .write = mk_ec_mmio_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid = {
++        .min_access_size = 1,
++        .max_access_size = 4,
++    },
++};
++
++static void mk_ec_realize(DeviceState *dev, Error **errp)
++{
++    ManikinekoECState *s = MANIKINEKO_EC(dev);
++
++    s->regs.profile  = s->be.profile;
++    s->regs.rollback = s->be.rollback;
++    s->be.owner = &s->regs;
++    if (s->be.be.chr) {
++        qemu_chr_fe_set_handlers(&s->be.be,
++                                 mk_ec_chr_can_read, mk_ec_chr_read,
++                                 NULL, NULL, &s->be, NULL, true);
++    }
++    memory_region_init_io(&s->mmio, OBJECT(s), &mk_ec_mmio_ops, s,
++                          TYPE_MANIKINEKO_EC, MK_EC_MMIO_SIZE);
++    sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->mmio);
++}
++
++static Property mk_ec_props[] = {
++    DEFINE_PROP_CHR("socket", ManikinekoECState, be.be),
++    DEFINE_PROP_UINT8("profile", ManikinekoECState, be.profile, 2),
++    DEFINE_PROP_UINT8("rollback", ManikinekoECState, be.rollback, 0),
++    DEFINE_PROP_END_OF_LIST(),
++};
++
++static void mk_ec_class_init(ObjectClass *oc, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(oc);
++
++    device_class_set_props(dc, mk_ec_props);
++    dc->realize = mk_ec_realize;
++}
++
++static const TypeInfo mk_ec_info = {
++    .name = TYPE_MANIKINEKO_EC,
++    .parent = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(ManikinekoECState),
++    .class_init = mk_ec_class_init,
++};
++
++/* ================= I2C slave frontend ================= */
++
++#define TYPE_MANIKINEKO_EC_I2C "manikineko-ec-i2c"
++OBJECT_DECLARE_SIMPLE_TYPE(ManikinekoECI2CState, MANIKINEKO_EC_I2C)
++
++struct ManikinekoECI2CState {
++    I2CSlave    parent_obj;
++    MKECBackend be;
++    MKECRegs    regs;
++    uint8_t     pointer;
++    bool        got_ptr;      /* first byte after START_SEND is the reg */
++};
++
++static int mk_ec_i2c_event(I2CSlave *i2c, enum i2c_event event)
++{
++    ManikinekoECI2CState *s = MANIKINEKO_EC_I2C(i2c);
++
++    if (event == I2C_START_SEND || event == I2C_START_RECV) {
++        s->got_ptr = false;
++    }
++    return 0;
++}
++
++static uint8_t mk_ec_i2c_recv(I2CSlave *i2c)
++{
++    ManikinekoECI2CState *s = MANIKINEKO_EC_I2C(i2c);
++    uint8_t v = mk_ec_reg_read(&s->be, &s->regs, s->pointer);
++
++    s->pointer = (s->pointer + 1) & MK_EC_MAX_REG;
++    return v;
++}
++
++static int mk_ec_i2c_send(I2CSlave *i2c, uint8_t data)
++{
++    ManikinekoECI2CState *s = MANIKINEKO_EC_I2C(i2c);
++
++    if (!s->got_ptr) {
++        s->pointer = data & MK_EC_MAX_REG;
++        s->got_ptr = true;
++        return 0;
++    }
++    mk_ec_reg_write(&s->be, &s->regs, s->pointer, data);
++    s->pointer = (s->pointer + 1) & MK_EC_MAX_REG;
++    return 0;
++}
++
++static void mk_ec_i2c_realize(DeviceState *dev, Error **errp)
++{
++    ManikinekoECI2CState *s = MANIKINEKO_EC_I2C(dev);
++
++    s->regs.profile  = s->be.profile;
++    s->regs.rollback = s->be.rollback;
++    s->be.owner = &s->regs;
++    if (s->be.be.chr) {
++        qemu_chr_fe_set_handlers(&s->be.be,
++                                 mk_ec_chr_can_read, mk_ec_chr_read,
++                                 NULL, NULL, &s->be, NULL, true);
++    }
++}
++
++static Property mk_ec_i2c_props[] = {
++    DEFINE_PROP_CHR("socket", ManikinekoECI2CState, be.be),
++    DEFINE_PROP_UINT8("profile", ManikinekoECI2CState, be.profile, 2),
++    DEFINE_PROP_UINT8("rollback", ManikinekoECI2CState, be.rollback, 0),
++    DEFINE_PROP_END_OF_LIST(),
++};
++
++static void mk_ec_i2c_class_init(ObjectClass *oc, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(oc);
++    I2CSlaveClass *ic = I2C_SLAVE_CLASS(oc);
++
++    dc->realize = mk_ec_i2c_realize;
++    ic->event = mk_ec_i2c_event;
++    ic->recv  = mk_ec_i2c_recv;
++    ic->send  = mk_ec_i2c_send;
++    device_class_set_props(dc, mk_ec_i2c_props);
++}
++
++static const TypeInfo mk_ec_i2c_info = {
++    .name = TYPE_MANIKINEKO_EC_I2C,
++    .parent = TYPE_I2C_SLAVE,
++    .instance_size = sizeof(ManikinekoECI2CState),
++    .class_init = mk_ec_i2c_class_init,
++};
++
++static void mk_ec_register_types(void)
++{
++    type_register_static(&mk_ec_info);
++    type_register_static(&mk_ec_i2c_info);
++}
++type_init(mk_ec_register_types)
+diff --git a/hw/misc/manikineko-uxh1.c b/hw/misc/manikineko-uxh1.c
+new file mode 100644
+index 0000000..41950b0
+--- /dev/null
++++ b/hw/misc/manikineko-uxh1.c
+@@ -0,0 +1,119 @@
++/*
++ * UXH-1 expansion slot. A card process announces itself to ec_sim via
++ * CARD_ATTACH; this device is the board-side lane gate: it exposes the
++ * slot's negotiated lane mask to the guest and refuses to enable PCIe or
++ * USB3 lanes the card did not advertise (mirrors PROMPTS.md rule 5).
++ *
++ * Card state is queried through the EC device via the "ec" link property
++ * (QEMU chardevs have a single frontend, so slots share the EC's socket
++ * rather than owning one). Without a link it serves its local fields.
++ *
++ * Registers (byte):
++ *   0x00  present
++ *   0x01  isa          (enum up_card_isa)
++ *   0x02  lanes_adv    (advertised lane mask)
++ *   0x03  slot index
++ *   0x04  lanes_en     (rw: write requests enable; reads return
++ *                       requested & advertised - unadvertised lanes refuse)
++ */
++#include "qemu/osdep.h"
++#include "hw/sysbus.h"
++#include "hw/qdev-properties.h"
++#include "hw/qdev-properties-system.h"
++#include "hw/misc/manikineko.h"
++
++#define TYPE_UXH1_SLOT "uxh1-slot"
++OBJECT_DECLARE_SIMPLE_TYPE(UXH1SlotState, UXH1_SLOT)
++
++#define UXH1_MMIO_SIZE 0x100
++
++struct UXH1SlotState {
++    SysBusDevice parent_obj;
++    MemoryRegion mmio;
++    DeviceState *ec;        /* link to manikineko-ec */
++    uint8_t  slot;
++    uint8_t  isa;
++    uint8_t  lanes_adv;
++    uint8_t  lanes_en;
++    uint8_t  present;
++};
++
++static uint64_t uxh1_read(void *opaque, hwaddr addr, unsigned size)
++{
++    UXH1SlotState *s = UXH1_SLOT(opaque);
++
++    /* live view through the EC when linked */
++    if (s->ec && addr <= 0x03) {
++        return mk_ec_card_status(s->ec, s->slot, addr);
++    }
++    switch (addr) {
++    case 0x00:
++        return s->present;
++    case 0x01:
++        return s->isa;
++    case 0x02:
++        return s->lanes_adv;
++    case 0x03:
++        return s->slot;
++    case 0x04:
++        return s->lanes_en & s->lanes_adv;
++    default:
++        return 0;
++    }
++}
++
++static void uxh1_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
++{
++    UXH1SlotState *s = UXH1_SLOT(opaque);
++
++    if (addr == 0x04) {
++        s->lanes_en = (uint8_t)val;    /* effective mask applied on read */
++    }
++}
++
++static const MemoryRegionOps uxh1_ops = {
++    .read = uxh1_read,
++    .write = uxh1_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid = {
++        .min_access_size = 1,
++        .max_access_size = 4,
++    },
++};
++
++static void uxh1_realize(DeviceState *dev, Error **errp)
++{
++    UXH1SlotState *s = UXH1_SLOT(dev);
++
++    memory_region_init_io(&s->mmio, OBJECT(s), &uxh1_ops, s,
++                          TYPE_UXH1_SLOT, UXH1_MMIO_SIZE);
++    sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->mmio);
++}
++
++static Property uxh1_props[] = {
++    DEFINE_PROP_UINT8("slot", UXH1SlotState, slot, 0),
++    DEFINE_PROP_LINK("ec", UXH1SlotState, ec, TYPE_MANIKINEKO_EC,
++                     DeviceState *),
++    DEFINE_PROP_END_OF_LIST(),
++};
++
++static void uxh1_class_init(ObjectClass *oc, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(oc);
++
++    dc->realize = uxh1_realize;
++    device_class_set_props(dc, uxh1_props);
++}
++
++static const TypeInfo uxh1_info = {
++    .name = TYPE_UXH1_SLOT,
++    .parent = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(UXH1SlotState),
++    .class_init = uxh1_class_init,
++};
++
++static void uxh1_register(void)
++{
++    type_register_static(&uxh1_info);
++}
++type_init(uxh1_register)
+diff --git a/hw/misc/meson.build b/hw/misc/meson.build
+index d02d96e..37c151a 100644
+--- a/hw/misc/meson.build
++++ b/hw/misc/meson.build
+@@ -1,5 +1,7 @@
+ system_ss.add(when: 'CONFIG_APPLESMC', if_true: files('applesmc.c'))
+ system_ss.add(when: 'CONFIG_EDU', if_true: files('edu.c'))
++system_ss.add(when: 'CONFIG_MANIKINEKO', if_true: files('manikineko-ec.c'))
++system_ss.add(when: 'CONFIG_MANIKINEKO', if_true: files('manikineko-uxh1.c'))
+ system_ss.add(when: 'CONFIG_FW_CFG_DMA', if_true: files('vmcoreinfo.c'))
+ system_ss.add(when: 'CONFIG_ISA_DEBUG', if_true: files('debugexit.c'))
+ system_ss.add(when: 'CONFIG_ISA_TESTDEV', if_true: files('pc-testdev.c'))
+diff --git a/include/hw/misc/manikineko.h b/include/hw/misc/manikineko.h
+new file mode 100755
+index 0000000..34424fc
+--- /dev/null
++++ b/include/hw/misc/manikineko.h
+@@ -0,0 +1,19 @@
++/*
++ * Manikineko platform device interface.
++ * Shared by the EC mailbox device and the UXH-1 expansion slots.
++ */
++#ifndef HW_MISC_MANIKINEKO_H
++#define HW_MISC_MANIKINEKO_H
++
++#include "hw/qdev-core.h"
++
++#define TYPE_MANIKINEKO_EC "manikineko-ec"
++
++/*
++ * Query an expansion slot's live status through the EC device.
++ * field: 0=present, 1=isa, 2=lanes_adv, 3=slot index.
++ * Returns 0 when the EC has no card in @slot.
++ */
++uint8_t mk_ec_card_status(DeviceState *ec_dev, int slot, int field);
++
++#endif
+-- 
+2.53.0
+
